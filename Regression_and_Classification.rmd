@@ -1,0 +1,521 @@
+---
+title: "Performance Analysis of Supervised Learning for Medical Insurance Costs"
+author: "Jinghui Yao, Qiaolin Liang, Yifan Wang, Ruizhi Xu, Haofei Lai, Yonghao Li"
+date: "3/30/2020"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+## Load Libraries
+```{r}
+# Load in necessary libraries
+library(tidyverse)
+library(stringr)
+library(skimr)
+library(readr)
+library(e1071)
+library(tidyr)
+library(rcompanion)
+library(MASS)
+library(performance)
+library(ggplot2)
+library(GGally)
+library(broom)
+```
+
+## Load Dataset
+```{r}
+med_ins = read.csv("insurance.csv", header = T)
+
+# Exploration and summary stats
+head(med_ins)
+str(med_ins)
+summary(med_ins)
+```
+From the strustural description of the dataset, we can see that this medical insurance dataset contains 1338 observations and 7 features, including age, sex, bmi index, number of children, smoking status, region of residence within USA, and annual individual medical costs billed by health insurance. In this regression project, we are trying to use all the characteristic features to accurately predict annual healthcare costs of an individual living in the US.
+
+From the summary statistics of the dataset, we can see that the respondents are between 18-64 years old, having 0-5 children, with an annual medical costs between \$1,122 and \$63,770 (mean value is \$13,270).
+
+# Descriptive Analysis
+## EDA (plots optional)
+```{r}
+# EDA
+ggplot(data = med_ins, aes(as.factor(children),charges)) + 
+  geom_boxplot(fill = c(1:6)) +
+  theme_minimal() +  
+  xlab("Number of Children") +
+  ylab("Healthcare Costs(USD)") +
+  ggtitle("Boxplot of Medical Charges by Number of Children")
+
+ggplot(data = med_ins, aes(smoker,charges)) + 
+  geom_boxplot(fill = c(1:2)) +
+  theme_minimal() + 
+  xlab("Smoking Status") +
+  ylab("Healthcare Costs(USD)") +
+  ggtitle("Boxplot of Medical Charges by Smoking Status")
+
+```
+From the first boxplot, we can see that, surprisingly, respondents with 2-4 children have higher medical bills on average, but respondents with 5 children tend to have lower medical costs (could be a result of government support or other factors).
+
+The second boxplot indicates clearly that respondents who smoke have an average healthcare cost that is almost 4 times higher than those who do not smoke. Smoking status seems to have a large impact on individual medical costs.
+
+
+```{r}
+# Check and confirm no missing values
+med_ins %>% summarise_all(.funs = funs(sum(is.na(.))))
+```
+
+Transform the gender and smoking status to factors where
+Gender
+0: Female
+1: Male
+
+Smoker
+0: Non-Smoker
+1: Smoker
+
+## Correlation Analysis
+```{r}
+# Convert categorical features to numeric for correlation analysis
+num_med_ins <- med_ins # create a new duplicate dataset for correlation
+unique(num_med_ins$sex)
+num_med_ins$sex <- ifelse(num_med_ins$sex == "male", 1, 0)
+unique(num_med_ins$smoker)
+num_med_ins$smoker <- ifelse(num_med_ins$smoker == "yes", 1, 0)
+unique(num_med_ins$region)
+num_med_ins$region <- dplyr::case_when(
+  num_med_ins$region == "northeast" ~ 1,
+  num_med_ins$region == "northwest" ~ 2,
+  num_med_ins$region == "southeast" ~ 3,
+  TRUE ~ 4
+)
+str(num_med_ins)
+
+# Check for multicollinearity assumption
+ggpairs(num_med_ins, progress = FALSE) +
+  theme(panel.grid.major = element_blank())
+
+# The correlation plots indicate that none of the variables are highly correlated with
+# one another, thus it is safe to say that the dataset does not have a multicollinearity problem.
+
+```
+
+
+```{r}
+# General distribution of medical charges
+skewness(med_ins$charges)
+plotNormalHistogram(med_ins$charges,
+                    main = "Figure 1: Normal Histogram of Medical Charges Distribution",
+                    xlab="Medical Charges (USD)",
+                    ylab="Number of Respondents")
+
+# We need to correct for the positive skewness within the distribution
+# before continuing with Linear Regression Modeling
+
+plotNormalHistogram(log(med_ins$charges),
+                    main = "Figure 1: Normal Histogram of Log-Scale Medical Charges Distribution",
+                    xlab="Medical Charges (USD)",
+                    ylab="Number of Respondents")
+
+# The log-scale transformation leads to a normalized distribution
+# of medical charges.
+```
+
+# Linear Regression Model
+## Full Model and Feature Selection
+```{r}
+# Backward Selection
+log_med_ins <- med_ins # create a new duplicate dataset for linear regression
+log_med_ins$log_charges = log(log_med_ins$charges)
+log_med_ins <- log_med_ins %>% dplyr::select(-7)
+full <- lm(log_charges ~ ., data = log_med_ins)
+stepB <- stepAIC(full, direction = "backward", trace=TRUE)
+summary(stepB)
+
+# Using feature selection, we can see that all predictors are significant at alpha 
+# level = 0.05, so we will keep all variables for the following linear regression model.
+
+```
+
+## Assumptions Test
+```{r}
+plot(full)
+str(log_med_ins)
+
+# Plots indicate that the model cannot satisfy all 4 assumptions
+# we need to explore transformations of the model
+
+```
+
+## Transformations of Linear Model
+```{r}
+# Use box-cox transformation
+skewness(full$residuals)
+b <- boxcox(full)
+lambda <- b$x
+lik <- b$y
+df <- cbind.data.frame(lambda,lik)
+which.max(df$lik)
+maxlambda <- df$lambda[which.max(df$lik)]
+maxlambda
+
+# Update original model with lambda
+med_model2 <- lm(log_charges^2 ~ ., data = log_med_ins)
+plot(med_model2)
+
+# Remove influential points
+p <- length(med_model2$coefficients)
+n <- nrow(med_model2$model)
+dffits_crit = 2 * sqrt((p + 1) / (n - p - 1))
+model2_dffits <- dffits(med_model2)
+
+# Build a log-scale linear regression model 
+med_model3 <- lm(log_charges^2 ~ ., 
+                 data = log_med_ins[-which(abs(model2_dffits) > dffits_crit),])
+model_performance(med_model3)
+check_model(med_model3)
+summary(med_model3)
+```
+
+By assigning weights to update the log-scale model, we end up with a third model with an adjusted R-squared of 0.9105, indicating that the predictors in this model explain 91.05% of variance in medical charges.
+
+The model performance statistics indicates an RMSE of 4.856, which is acceptable.
+
+When checking the model, we found that the updated model still does not satisfy the constant variance assumption:
+- Low correlation indicates that there is no multicollinearity between the numeric variables;
+- Distribution of residuals roughly follows a normal curve;
+- Residuals spread roughly along both sides of the red line in the homoscedasticity plot, however, the red line does not seem to be horizontal even after several transformations. The residual points seem to follow a weird downward curve, suggesting that they do not satisfy the constant variance assumption;
+- There are no obvious outliers in the model, residuals mostly followthe line in the QQ plot (change of pattern at the end could be explained by the right-skewed distribution of medical charges);
+- There are no influential points exceeding Cook's Distance.
+
+Because of these findings, we suspect that there are non-linear relationships within the dataset, rendering the linear regression models to be less than useful. Thus, we shift our focus to building classification algorithms.
+
+
+# Classification Models
+## Re-code Factors and Assign Charge Levels
+```{r}
+library(dplyr)
+
+# Create new duplicate dataset for classification manipulations
+med_ins2 = read.csv("insurance.csv", header = T)
+
+med_ins2$sex <- ifelse(med_ins2$sex == "male", 1, 0)
+med_ins2$smoker <- ifelse(med_ins2$smoker == "yes", 1, 0)
+med_ins2$region <- dplyr::case_when(
+  med_ins2$region == "northeast" ~ 1,
+  med_ins2$region == "northwest" ~ 2,
+  med_ins2$region == "southeast" ~ 3,
+  TRUE ~ 4
+)
+
+# Categorized by mean of log-scale of charges (2 levels)
+med_ins2 <- med_ins2 %>% mutate(log_charge = log(charges))
+mean_log_charges <- mean(med_ins2$log_charge)
+med_ins2$charge_level <- ifelse(med_ins2$log_charge >= mean_log_charges, "High", "Low")
+length(which(med_ins2$charge_level == "High")) # 696
+length(which(med_ins2$charge_level == "Low")) # 642
+
+med_ins2 <- med_ins2 %>% 
+  dplyr::select(-c(7,8)) %>% 
+  as.data.frame()
+
+
+str(med_ins2)
+```
+
+## Divide dataset into training and testing (70:30)
+```{r}
+set.seed(123)
+new_train <- sample(nrow(med_ins2),as.integer(nrow(med_ins2)*0.70))
+train_set_ins = med_ins2[new_train,]
+test_set_ins = med_ins2[-new_train,]
+train_labels_ins <- train_set_ins[,7]
+test_labels_ins <- test_set_ins[, 7]
+test_set_ins <- test_set_ins[,-7]
+```
+
+## Random Forest Classifier
+```{r}
+library(caret)
+
+ctrl <- trainControl(method="repeatedcv", number = 5, repeats = 3)
+set.seed(123)
+RFmodel_ins <- train(charge_level ~ ., data = train_set_ins, method="rf", ntree=500, trControl = ctrl)
+test_predRF_ins <- predict(RFmodel_ins, test_set_ins)
+cf_RF_ins <- confusionMatrix(as.factor(test_predRF_ins), as.factor(test_labels_ins),
+                             mode = "everything")
+print(cf_RF_ins)
+
+# Using log + mean to categorize: accuracy = 0.9353, F1 = 0.9316
+
+```
+
+## SVM Classifier
+```{r}
+set.seed(123)
+SVMmodel_ins <- train(charge_level ~ ., data = train_set_ins, method="svmPoly", trControl = ctrl)
+test_predSVM_ins <- predict(SVMmodel_ins, test_set_ins)
+cf_SVM_ins <- confusionMatrix(as.factor(test_predSVM_ins), as.factor(test_labels_ins),
+                              mode = "everything")
+print(cf_SVM_ins)
+
+# Using log + mean to categorize: accuracy = 0.9328, F1 = 0.9288
+
+```
+
+## Naive Bayes Classifier
+```{r}
+set.seed(123)
+NBmodel_ins <- train(charge_level ~ ., data = train_set_ins, method="naive_bayes", trControl = ctrl)
+test_predNB_ins <- predict(NBmodel_ins, test_set_ins)
+cf_NB_ins <- confusionMatrix(as.factor(test_predNB_ins), as.factor(test_labels_ins),
+                              mode = "everything")
+print(cf_NB_ins)
+
+# Using log + mean to categorize: accuracy = 0.8930, F1 = 0.8938
+
+```
+
+## Logistic Regression Classifier
+```{r}
+set.seed(123)
+LRmodel_ins <- train(charge_level ~ ., data = train_set_ins, method="glm", trControl = ctrl)
+test_predLR_ins <- predict(LRmodel_ins, test_set_ins)
+cf_LR_ins <- confusionMatrix(as.factor(test_predLR_ins), as.factor(test_labels_ins),
+                              mode = "everything")
+print(cf_LR_ins)
+
+# Using log + mean to categorize: accuracy = 0.8955, F1 = 0.8945
+
+```
+
+## Ensemble Model
+```{r}
+library(caret)
+library(caretEnsemble)
+
+control=trainControl(method="repeatedcv", number = 5, repeats = 3, savePredictions="final", classProbs=TRUE)
+algorithmList=c('rf', 'svmPoly', 'glm', 'naive_bayes')
+set.seed(123)
+models1=caretList(charge_level ~ ., data = train_set_ins, trControl=control, methodList=algorithmList)
+results1=resamples(models1)
+summary(results1)
+dotplot(results1)  
+modelCor(results1)
+
+# Using log of mean charges to categorize: SVM & glm are highly correlated (>0.75), 
+# remove glm from the ensemble model because of its lower accuracy.
+
+```
+
+## Update Ensemble Model
+```{r}
+library(caretEnsemble)
+
+control=trainControl(method="repeatedcv", number = 5, repeats=3, savePredictions="final", classProbs=TRUE)
+algorithmList=c('rf', 'svmPoly', 'naive_bayes')
+set.seed(123)
+models2=caretList(charge_level ~ ., data=train_set_ins, trControl=control, methodList=algorithmList)
+set.seed(123)
+results2=resamples(models2)
+summary(results2)
+dotplot(results2)  
+modelCor(results2)
+```
+
+## Combine Predictions of Models Using Caret Stack with RF
+```{r}
+stackControl=trainControl(method="repeatedcv", number=5, repeats=3, savePredictions=TRUE, classProbs=TRUE)
+set.seed(123)
+stack_rf=caretStack(models2, method="rf", metric="Accuracy", trControl=stackControl)
+print(stack_rf)
+```
+
+## Check stack.rf Performance
+```{r}
+stack_pred=predict(stack_rf, test_set_ins)
+cf_ensemble=confusionMatrix(as.factor(stack_pred), as.factor(test_labels_ins), mode = "everything")
+print(cf_ensemble)
+
+# Using mean to categorize: The ensemble model has an accuracy of 0.9428, with an F1 score of 0.9390.
+# Ensemble model has a higher accuracy and F1 score than the other solo classifiers.
+
+```
+
+## Decision Tree Model
+```{r}
+library(rpart)
+library(rpart.plot)
+library(dplyr)
+library(caret)
+
+# Create new duplicate dataset for Decision Tree
+med_ins3 = read.csv("insurance.csv", header = T)
+
+# Transform all variables into factors
+med_ins3$age <- dplyr::case_when(
+  med_ins3$age <= 30 ~ "Younger Age (Under 30)",
+  med_ins3$age >= 60 ~ "Older Age (Over 60)",
+  TRUE ~ "Middle Age (30-60)"
+) %>% 
+  as.factor()
+med_ins3$bmi <- dplyr::case_when(
+  med_ins3$bmi < 18.5 ~ "Underweight",
+  med_ins3$bmi >= 18.5 & med_ins3$bmi < 25 ~ "Healthy",
+  med_ins3$bmi >= 25 & med_ins3$bmi < 30 ~ "Overweight",
+  med_ins3$bmi >= 30 ~ "Obese",
+  TRUE ~ "Unhealthy"
+) %>% 
+  as.factor()
+med_ins3$children <- as.factor(med_ins3$children)
+
+# Categorized by mean of log-scale of charges (2 levels)
+med_ins3 <- med_ins3 %>% mutate(log_charge = log(charges))
+mean_log_charges <- mean(med_ins3$log_charge)
+med_ins3$charge_level <- ifelse(med_ins3$log_charge >= mean_log_charges, "High", "Low")
+
+# Remove unnecessary columns containing charges
+med_ins3 <- med_ins3 %>% dplyr::select(-c(7,8))
+
+# Divide dataset into 70:30 train and test sets
+set.seed(123)
+dt_train <- sample(nrow(med_ins3), as.integer(nrow(med_ins3)*0.70))
+train_set_dt = med_ins3[dt_train,]
+test_set_dt = med_ins3[-dt_train,]
+train_labels_dt <- train_set_dt[,7]
+test_labels_dt <- test_set_dt[, 7]
+test_set_dt <- test_set_dt[,-7]
+
+# Create decision tree model using training dataset
+## Use this plot for paper (explain information gain)
+output_tree_1 <- rpart(charge_level ~ ., data = train_set_dt)
+rpart.plot(output_tree_1,
+           box.palette="auto",
+           shadow.col="gray",
+           nn=TRUE,
+           main = "Decision Tree Plot of Medical Charge Level Prediction")
+
+# The above decision tree plot uses Gini impurity measure to split the nodes.
+# The higher the Gini coefficient, the more different instances within the node.
+
+## Use this plot for presentation (clear version)
+output_tree_2 <- rpart(charge_level ~ ., data = train_set_dt)
+rpart.plot(output_tree_2,
+           box.palette="auto",
+           shadow.col="gray",
+           nn=TRUE,
+           type = 3,
+           clip.right.labs = FALSE,
+           main = "Decision Tree Plot of Medical Charge Level Prediction")
+
+# Make predictions using the decision tree with testing dataset
+predict_dt <- predict(output_tree_1, test_set_dt, type = "class")
+
+cf_DT_ins <- confusionMatrix(as.factor(predict_dt), as.factor(test_labels_dt),
+                              mode = "everything")
+print(cf_DT_ins)
+
+# Log mean 2 levels: decision tree accuracy = 0.7662, F1 score = 0.7267
+
+```
+
+## Build a Prediction Function using Model with Highest Accuracy (Ensemble Model in this case)
+```{r}
+pred_med_level <- function(model, a, s, b, c, smo, r){
+  pred_level <- predict(model, data.frame(age=as.integer(a),
+                                          sex=as.numeric(s),
+                                          bmi=as.numeric(b),
+                                          children=as.integer(c),
+                                          smoker=as.numeric(smo),
+                                          region=as.numeric(r)))
+  result_info <- paste("A person with age: ",a,", sex (male=1, female=0): ",s,", bmi: ",b,
+                       ", children: ",c,", smoker (yes=1, no=0): ",smo,
+                       ", region in US (northeast=1, northwest=2, southeast=3, southwest=4): "
+                       ,r," is predicted to have a ",pred_level,
+                       " medical charge level.",sep="")
+  print(result_info)
+}
+
+# Example: Using ensemble model because of its high accuracy
+pred_med_level(stack_rf, 45, 1, 30, 2, 1, 3)
+
+```
+
+
+
+\newpage
+## Appendix 1
+# References
+
+Wickham et al., (2019). Welcome to the tidyverse.
+  Journal of Open Source Software, 4(43), 1686,
+  https://doi.org/10.21105/joss.01686
+  
+Hadley Wickham (2019). stringr: Simple, Consistent
+  Wrappers for Common String Operations. R package
+  version 1.4.0.
+  https://CRAN.R-project.org/package=stringr
+
+Elin Waring, Michael Quinn, Amelia McNamara, Eduardo
+  Arino de la Rubia, Hao Zhu and Shannon Ellis (2020).
+  skimr: Compact and Flexible Summaries of Data. R
+  package version 2.1.
+  https://CRAN.R-project.org/package=skimr
+  
+Hadley Wickham, Jim Hester and Romain Francois (2018).
+  readr: Read Rectangular Text Data. R package version
+  1.3.1. https://CRAN.R-project.org/package=readr
+  
+David Meyer, Evgenia Dimitriadou, Kurt Hornik, Andreas
+  Weingessel and Friedrich Leisch (2019). e1071: Misc
+  Functions of the Department of Statistics, Probability
+  Theory Group (Formerly: E1071), TU Wien. R package
+  version 1.7-3.
+  https://CRAN.R-project.org/package=e1071
+
+Hadley Wickham and Lionel Henry (2020). tidyr: Tidy
+  Messy Data. R package version 1.0.2.
+  https://CRAN.R-project.org/package=tidyr
+
+Salvatore Mangiafico (2020). rcompanion: Functions to
+  Support Extension Education Program Evaluation. R
+  package version 2.3.25.
+  https://CRAN.R-project.org/package=rcompanion
+  
+Venables, W. N. & Ripley, B. D. (2002) Modern Applied
+  Statistics with S. Fourth Edition. Springer, New York.
+  ISBN 0-387-95457-0
+  
+Daniel Lüdecke, Dominique Makowski and Philip Waggoner
+  (2020). performance: Assessment of Regression Models
+  Performance. R package version 0.4.4.
+  https://CRAN.R-project.org/package=performance
+  
+H. Wickham. ggplot2: Elegant Graphics for Data
+  Analysis. Springer-Verlag New York, 2016.
+  
+Barret Schloerke, Jason Crowley, Di Cook, Francois
+  Briatte, Moritz Marbach, Edwin Thoen, Amos Elberg and
+  Joseph Larmarange (2018). GGally: Extension to
+  'ggplot2'. R package version 1.4.0.
+  https://CRAN.R-project.org/package=GGally
+  
+David Robinson and Alex Hayes (2020). broom: Convert
+  Statistical Analysis Objects into Tidy Tibbles. R
+  package version 0.5.4.
+  https://CRAN.R-project.org/package=broom
+  
+Max Kuhn (2020). caret: Classification and Regression
+  Training. R package version 6.0-85.
+  https://CRAN.R-project.org/package=caret
+  
+Zachary A. Deane-Mayer and Jared E. Knowles (2019).
+  caretEnsemble: Ensembles of Caret Models. R package
+  version 2.0.1.
+  https://CRAN.R-project.org/package=caretEnsemble
+  
+Torsten Hothorn, Kurt Hornik and Achim Zeileis (2006).
+  Unbiased Recursive Partitioning: A Conditional
+  Inference Framework. Journal of Computational and
+  Graphical Statistics, 15(3), 651--674.
